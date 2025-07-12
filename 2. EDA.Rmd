@@ -1,0 +1,463 @@
+---
+title: "EDA for M5 Kaggle"
+author: "Jinhang Yang"
+date: "2020/5/14"
+output: html_document
+---
+##  导入包
+```{r}
+# 数据可视化包
+library('ggplot2') # visualisation
+library('scales') # visualisation
+library('patchwork') # visualisation
+library('RColorBrewer') # visualisation
+library('corrplot') # visualisation
+
+# 数据处理
+library('dplyr') 
+library('readr') 
+library('vroom') 
+library('tibble')
+library('tidyr')
+
+# 数据可视化主题包
+library('ggthemes')
+library('ggthemr')
+
+
+# 交互式图标
+library('crosstalk')
+library('plotly')
+
+```
+
+# 数据导入
+注：这部分数据 移
+```{r}
+pre_path = "../第二部分：特征工程、建模和结果/Input/"
+train <- vroom(paste(pre_path,'.\sales_train_validation.csv'), delim = ",", col_types = cols())
+prices <- vroom(paste(pre_path,'sell_prices.csv'), delim = ",", col_types = cols())
+calendar <- read_csv(paste(pre_path,'calendar.csv'), col_types = cols())
+sample_submit <- vroom(paste(pre_path,'sample_submission.csv'), delim = ",", col_types = cols())
+```
+
+# 准备
+```{r}
+extract_ts <- function(df){
+  
+  min_date <- date("2011-01-29")
+  
+  df %>%
+    select(id, starts_with("d_")) %>%  
+    pivot_longer(starts_with("d_"), names_to = "dates", values_to = "sales") %>%
+    mutate(dates = as.integer(str_remove(dates, "d_"))) %>% 
+    mutate(dates = min_date + dates - 1) %>% 
+    mutate(id = str_remove(id, "_validation"))
+}
+
+ts_out <- extract_ts(foo)
+
+cols <- ts_out %>% 
+  distinct(id) %>% 
+  mutate(cols = rep_len(brewer.pal(7, "Set2"), length.out = n_distinct(ts_out$id)))
+
+ts_out <- ts_out %>% 
+  left_join(cols, by = "id")
+
+pal <- cols$cols %>%
+   setNames(cols$id)
+```
+
+## 日期图
+
+```{r}
+ggthemr("flat")
+
+
+foo <- extract_ts(train %>% head(1)) %>% 
+  select(dates) %>% 
+  mutate(dset = "training")
+
+bar <- tibble(
+  dates = max(foo$dates) + seq(1,28,1)
+) %>% 
+  mutate(dset = "validation")
+
+foobar <- tibble(
+  dates = max(bar$dates) + seq(1,28,1)
+) %>% 
+  mutate(dset = "evaluation")
+
+foo <- foo %>%
+  bind_rows(bar) %>%
+  bind_rows(foobar) %>%
+  mutate(year = year(dates)) %>% 
+  mutate(dset = fct_relevel(as.factor(dset), c("training", "validation", "evaluation")))
+year(foo$dates) <- 2016
+
+g = foo %>%
+  filter(!is.na(dates)) %>%
+  ggplot(aes(dates, year, color = dset)) +
+  geom_point(shape = "|", size = 10) +
+  scale_x_date(date_labels = "%b", date_breaks = "1 month") +
+  scale_y_reverse() +
+  # theme_hc() +
+  theme(legend.position = "bottom") + #, axis.text.x  = element_text(angle=45, hjust=1, vjust=0.9)) +
+  labs(color = "Data set", x = "Month", y = "Year", title = "Training vs Validation vs Evaluation over time") +
+  #scale_color_brewer(type = "qual", palette = "Set2") +
+  #scale_color_manual(values = wes_palette("FantasticFox1")) +
+  guides(color = guide_legend(override.aes = list(size = 4, pch = 15)))+   mytheme
+```
+
+```{r}
+palette(brewer.pal(9, "Set3"))
+
+gg <- shared_ts %>% 
+  ggplot(aes(dates, sales, col = id, group = id)) +
+  geom_line() +
+  scale_color_manual(values = pal) +
+  labs(x = "Date", y = "Sales") +
+  theme_tufte() +
+  NULL
+
+filter <- bscols(
+  filter_select("ids", "Sales over time (Select a time series ID):", shared_ts, ~id, multiple = TRUE),
+  ggplotly(gg+mytheme, dynamicTicks = TRUE),
+  widths = c(12, 12)
+)
+
+bscols(filter)
+```
+
+
+```{r}
+bar <- train %>% 
+  select(-contains("id")) %>% 
+  na_if(0) %>% 
+  is.na() %>% 
+  as_tibble() %>% 
+  mutate(sum = pmap_dbl(select(., everything()), sum)) %>% 
+  mutate(mean = sum/(ncol(train) - 1)) %>% 
+  select(sum, mean)
+  
+g1 = bar %>% 
+  ggplot(aes(mean)) +
+  geom_density(fill = "#002240" ) +
+  scale_x_continuous(labels = scales::percent) +
+  coord_cartesian(xlim = c(0, 1)) + mytheme +
+  # theme_hc() +
+  # theme(axis.text.y = element_blank()) +
+  labs(x = "", y = "", title = "Density for percentage of zero values - all 30790 time series")
+```
+
+
+
+## 不同部分平均价格
+
+
+```{r setup, include=FALSE}
+foo <- prices %>% 
+  mutate(cat_id = str_sub(item_id, 1, -7)) %>% 
+  mutate(dept_id = str_sub(item_id, -5, -5)) %>% 
+  mutate(state = str_sub(store_id, 1, 2))
+
+p = foo %>% 
+  ggplot(aes(sell_price, fill = dept_id)) +
+  geom_density(bw = 0.1, alpha = 0.5) +
+  scale_x_log10(breaks = c(0.5, 1, 5, 10, 50)) +
+  coord_cartesian(xlim = c(0.3, 60)) +
+  # facet_wrap(~ cat_id, nrow = 3) +
+  facet_grid(cat_id ~ state) +
+  theme_hc() +
+  theme(legend.position = "bottom") +mytheme+
+  labs(x = "Average Sales Price($)", y = "", fill = "Department",
+       title = "Item Prices vary by Category and Department but not by State"
+     )
+ggthemr("flat")
+```
+
+## EDA-Extra-2
+```{r}
+
+
+foo <- train %>%
+  group_by(cat_id) %>% 
+  summarise_at(vars(starts_with("d_")), sum) %>% 
+  rename(id = cat_id) %>% 
+  extract_ts() %>% 
+  rename(cat_id = id) %>% 
+  left_join(calendar %>% select(date, event_type_1), by = c("dates" = "date")) %>% 
+  filter(!str_detect(as.character(dates), "-12-25")) %>% 
+  group_by(cat_id) %>% 
+  mutate(loess = predict(loess(sales ~ as.integer(dates - min(dates)) + 1, span = 1/2, degree = 1)),
+         mean_sales = mean(sales)) %>% 
+  mutate(sales_rel = (sales - loess)/mean_sales) %>% 
+  mutate(is_event = !is.na(event_type_1)) %>% 
+  ungroup()
+
+
+p1 <- foo %>% 
+  ggplot(aes(dates, sales/1e3, group = is_event, col = is_event)) +
+  geom_line(aes(dates, loess/1e3), col = "black", linetype = 2) +
+  geom_line(alpha = 0.3) +
+  geom_smooth(method = "loess", formula = 'y ~ x', span = 2/3, se = FALSE) +
+ # scale_colour_manual(values = c("grey70", "red")) +
+  facet_wrap(~ cat_id, scales = "free") +
+  #theme_hc() +
+  theme(legend.position = "right") + 
+  labs(x = "", y = "Sales($1,000)", col = "Event", title = "Sales per Category during special events vs non-events") + mytheme
+p1
+
+p2 <- foo %>% 
+  ggplot(aes(cat_id, sales_rel, fill = is_event)) +
+  geom_boxplot() +
+  coord_flip() +
+  #scale_fill_manual(values = c("grey70", "red")) +
+  #theme_hc() +
+  theme(legend.position = "none", axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        axis.title.x = element_text(size = 10)) +
+  labs(x = "", y = "Relative Sales", fill = "event")+mytheme
+p2
+
+p3 <- foo %>%
+  filter(is_event == TRUE) %>% 
+  group_by(cat_id, event_type_1) %>% 
+  summarise(sales = median(sales_rel)) %>% 
+  ggplot(aes(cat_id, sales, fill = event_type_1)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  #theme_hc() +
+  theme(legend.position = "right", axis.title.x = element_text(size = 10)) +
+  labs(x = "", y = "Median Relative Sales", fill = "Type")+mytheme
+p3
+layout <- '
+AAAAAA
+AAAAAA
+AAAAAA
+BBBCCD
+BBBCCD
+'
+
+p1 + p2 + p3 + guide_area() + plot_layout(design = layout, guides = 'collect')
+
+```
+
+
+
+## EDA-Extra-3
+```{r}
+foo <- train %>%
+  group_by(state_id) %>% 
+  summarise_at(vars(starts_with("d_")), sum) %>% 
+  rename(id = state_id) %>% 
+  extract_ts() %>% 
+  rename(state_id = id) %>% 
+  left_join(calendar %>% select(date, event_type_1), by = c("dates" = "date")) %>% 
+  filter(!str_detect(as.character(dates), "-12-25")) %>% 
+  group_by(state_id) %>% 
+  mutate(loess = predict(loess(sales ~ as.integer(dates - min(dates)) + 1, span = 1/2, degree = 1)),
+         mean_sales = mean(sales)) %>% 
+  mutate(sales_rel = (sales - loess)/mean_sales) %>% 
+  mutate(is_event = !is.na(event_type_1)) %>% 
+  ungroup()
+
+
+p1 <- foo %>% 
+  ggplot(aes(dates, sales/1e3, group = is_event, col = is_event)) +
+  geom_line(aes(dates, loess/1e3), col = "black", linetype = 2) +
+  geom_line(alpha = 0.3) +
+  geom_smooth(method = "loess", formula = 'y ~ x', span = 2/3, se = FALSE) +
+ # scale_colour_manual(values = c("grey70", "red")) +
+  facet_wrap(~ state_id, scales = "free") +
+  mytheme +
+  theme(legend.position = "right") +
+  labs(x = "", y = "Sales ($1,000)", col = "Event", title = "Sales per State during special events vs non-events")
+
+p2 <- foo %>% 
+  ggplot(aes(state_id, sales_rel, fill = is_event)) +
+  geom_boxplot() +
+  coord_flip() +
+  #scale_fill_manual(values = c("grey70", "red")) +
+  mytheme +
+  theme(legend.position = "none", axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        axis.title.x = element_text(size = 10)) +
+  labs(x = "", y = "Relative Sales", fill = "event")
+
+p3 <- foo %>%
+  filter(is_event == TRUE) %>% 
+  group_by(state_id, event_type_1) %>% 
+  summarise(sales = median(sales_rel)) %>% 
+  ggplot(aes(state_id, sales, fill = event_type_1)) +
+  geom_col(position = "dodge") +
+  coord_flip() + mytheme+
+  # theme_hc() +
+  theme(legend.position = "right", axis.title.x = element_text(size = 10)) +
+  labs(x = "", y = "Median Relative Sales", fill = "Type")
+
+layout <- '
+AAAAAA
+AAAAAA
+AAAAAA
+BBBCCD
+BBBCCD
+'
+
+p1 + p2 + p3 + guide_area() + plot_layout(design = layout, guides = 'collect')
+```
+
+## EDA-Extra-4
+
+```{r}
+bar <- calendar %>% 
+  select(date, starts_with("snap")) %>% 
+  pivot_longer(starts_with("snap"), names_to = "state_id", values_to = "snap") %>% 
+  mutate(state_id = str_replace(state_id, "snap_", ""))
+
+foo <- train %>%
+  group_by(state_id) %>% 
+  summarise_at(vars(starts_with("d_")), sum) %>% 
+  rename(id = state_id) %>% 
+  extract_ts() %>% 
+  rename(state_id = id) %>% 
+  left_join(bar, by = c("dates" = "date", "state_id")) %>% 
+  filter(!str_detect(as.character(dates), "-12-25")) %>% 
+  mutate(snap = as.logical(snap)) %>% 
+  group_by(state_id) %>% 
+  mutate(loess = predict(loess(sales ~ as.integer(dates - min(dates)) + 1, span = 1/2, degree = 1)),
+         mean_sales = mean(sales)) %>% 
+  mutate(sales_rel = (sales - loess)/mean_sales) %>% 
+  ungroup()
+
+
+p1 <- foo %>% 
+  ggplot(aes(dates, sales/1e3, group = snap, col = snap)) +
+  geom_line(aes(dates, loess/1e3), col = "black", linetype = 2) +
+  geom_line(alpha = 0.3) +
+  geom_smooth(method = "loess", formula = 'y ~ x', span = 2/3, se = FALSE) +
+  # scale_colour_manual(values = c("grey70", "red")) +
+  facet_wrap(~ state_id, scales = "free") +
+  #theme_hc() +
+  theme(legend.position = "right") + mytheme+
+  labs(x = "", y = "Sales [$1k]", col = "SNAP day", title = "Sales per State on SNAP days vs other")
+
+p2 <- foo %>% 
+  group_by(state_id, snap) %>% 
+  summarise(sales = sum(sales),
+            ct = n()) %>% 
+  mutate(sales_daily = sales/ct) %>% 
+  add_tally(sales_daily, name = "total") %>% 
+  mutate(perc = sales_daily/total) %>% 
+  ggplot(aes(state_id, perc, fill = snap)) +
+  geom_col(position = "dodge") +
+  geom_label(aes(label = sprintf("%.1f %%", perc*100), group = snap), position = position_dodge(width = 1)) +
+  scale_y_continuous(labels = scales::percent, breaks = c(0, seq(0.1, 0.5, 0.2))) +
+  coord_cartesian(ylim = c(0, 0.6)) +
+  #scale_fill_manual(values = c("grey70", "red")) +mytheme+
+  # theme_hc() +
+  theme(legend.position = "none", axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+  labs(x = "", y = "", title = "Daily Sales Percentage")
+
+layout <- '
+AAAB
+AAAB
+AAAC
+'
+
+p1 + p2 + guide_area() + plot_layout(design = layout, guides = 'collect')
+
+```
+
+
+
+
+
+## Lag Features-1:
+```{r}
+# sum by cat + state, pivoting dates
+foo <- train %>%
+  group_by(cat_id, state_id) %>% 
+  summarise_at(vars(starts_with("d_")), sum) %>% 
+  ungroup() %>% 
+  select(ends_with("id"), starts_with("d_")) %>%  
+  pivot_longer(starts_with("d_"), names_to = "dates", values_to = "sales") %>%
+  mutate(dates = as.integer(str_remove(dates, "d_"))) %>% 
+  mutate(dates = min_date + dates - 1)
+
+# fit loess and subtract
+bar <- foo %>% 
+  filter(!str_detect(as.character(dates), "-12-25")) %>% 
+  group_by(cat_id, state_id) %>% 
+  mutate(loess = predict(loess(sales ~ as.integer(dates - min(dates)) + 1, span = 2/3, degree = 1)),
+         mean_sales = mean(sales)) %>% 
+  mutate(sales_rel = (sales - loess)/mean_sales)
+
+bar %>%
+  ggplot(aes(dates, sales, col = cat_id)) +
+  geom_line() +
+  geom_line(aes(dates, loess), col = "black") +
+  facet_grid(cat_id ~ state_id) +
+  theme_tufte() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "Sales", title = "Sales per State with Seasonalities")
+
+p1 <- bar %>% 
+  ungroup() %>%
+  mutate(wday = wday(dates, label = TRUE, week_start = 1)) %>% 
+  group_by(cat_id, state_id, wday) %>% 
+  summarise(sales = sum(sales_rel)) %>%
+  unite(col = id, ends_with("id"), remove = FALSE) %>%  
+  ggplot(aes(wday, sales, group = id, col = state_id)) +
+  geom_line(size = 1.5) +
+  theme_tufte() +
+  facet_wrap(~cat_id, scales = "free", nrow = 3) +
+  theme(legend.position = "top") +
+  labs(x = "", y = "Relative Sales", title = "Weekly Seasonality and", col = "State")
+  
+p2 <- bar %>% 
+  mutate(month = month(dates, label = TRUE)) %>% 
+  group_by(cat_id, state_id, month) %>% 
+  summarise(sales = sum(sales_rel)) %>%
+  unite(col = id, ends_with("id"), remove = FALSE) %>% 
+  ggplot(aes(month, sales, group = id, col = state_id)) +
+  geom_line(size = 1.5) +
+  theme_tufte() +
+  facet_wrap(~cat_id, scales = "free_y", nrow = 3) +
+  theme(legend.position = "none") +
+  labs(x = "", y = "Relative Sales", title = "Monthly Seasonality by Category & State", col = "State")
+
+layout <- "
+AABBB
+"
+
+p1 + p2 + plot_layout(design = layout)
+```
+
+```{r}
+min_date <- date("2011-01-29")
+
+foo <- train %>%
+  group_by(dept_id, state_id) %>% 
+  summarise_at(vars(starts_with("d_")), sum) %>% 
+  ungroup() %>% 
+  select(ends_with("id"), starts_with("d_")) %>%  
+  pivot_longer(starts_with("d_"), names_to = "dates", values_to = "sales") %>%
+  mutate(dates = as.integer(str_remove(dates, "d_"))) %>% 
+  mutate(dates = min_date + dates - 1)
+
+p1 = foo %>% 
+  mutate(month = month(dates),
+         year = year(dates)) %>% 
+  group_by(month, year, dept_id, state_id) %>% 
+  summarise(sales = sum(sales),
+            dates = min(dates)) %>% 
+  ungroup() %>% 
+  filter(str_detect(as.character(dates), "..-..-01")) %>% 
+  filter(dates != max(dates)) %>% 
+  ggplot(aes(dates, sales, col = dept_id)) +
+  geom_line() +
+  facet_grid(state_id ~ dept_id) +
+  theme_tufte() + mytheme+
+  theme(legend.position = "none", strip.text.x = element_text(size = 8)) +
+  labs(title = "Sales per Department and State", x = "Date", y = "Sales")
+```
+
